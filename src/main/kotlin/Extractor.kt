@@ -27,6 +27,20 @@ import java.nio.file.Files
 import java.nio.file.Paths
 import org.apache.commons.csv.CSVFormat
 import org.apache.commons.csv.CSVPrinter
+import java.lang.RuntimeException
+
+fun JavadocDescription.toPlainText(): String = elements.joinToString { element ->
+    when (element) {
+        is JavadocSnippet -> element.toText()
+        is JavadocInlineTag -> element.content
+        else -> throw RuntimeException("Unknown JavadocDescriptionElement type: ${element::class.java}")
+    }
+}
+fun String.removeTags(): String = Jsoup.parse(this)
+    .apply{
+        select("pre").forEach { it.text("code-example") }
+    }
+    .text()
 
 class `Extractor` : CliktCommand(name = "extract", help="Extract class-level documentation from javadoc"){
 
@@ -43,23 +57,16 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
     private val sources by argument(help = "<path> of the input files")
         .file(exists = true, readable = true)
         .multiple()
-    private fun extractClassdocs(file: File) : Sequence<String> = sequence{
-        val className = file.nameWithoutExtension
-        if (className.first().isLowerCase()) return@sequence
-        if (file.extension == "java"){
-            extractJava(file)
-        }
-        else if (file.extension == "html") {
-            extractHtml(file)
-        }
-    }
+
     private fun extractHtml(file: File) : Sequence<String> = sequence{
         val document = Jsoup.parse(file, Charsets.UTF_8.name())
         val description = document.select(".description .block").text()
         val sentences = Document(description).sentences()
         for (sen in sentences){
             val sentence = sen.toString()
-            yield(sentence)
+            if (sentence.length > 1) {
+                yield(sentence)
+            }
         }
     }
     private fun extractJava(file: File) : Sequence<String> = sequence{
@@ -73,7 +80,9 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
                         val description = javadocComment
                             .parse()
                             .description
-                            .toText()
+                            .toPlainText()
+                            .replace("\u003cp\u003e",".")
+                            .removeTags()
                         sentences.addAll(Document(description).sentences())
 
 
@@ -84,7 +93,9 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
         }
         for (sen in sentences) {
             val sentence = sen.toString()
-            yield(sentence)
+            if (sentence.length > 1) {
+                yield(sentence)
+            }
         }
 
     }
@@ -112,7 +123,6 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
 
             for (source in javaSources) {
                 executor.submit{
-                    print("p")
                     if (source.extension == "java") {
                         extractJava(source)
                             .forEach {
