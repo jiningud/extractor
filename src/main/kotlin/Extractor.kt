@@ -7,145 +7,131 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.file
 import com.github.ajalt.clikt.parameters.types.int
+import com.github.ajalt.clikt.parameters.types.path
 import com.github.javaparser.JavaParser
-import com.github.javaparser.ast.expr.*
-import com.github.javaparser.javadoc.description.*
-import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration
-import com.github.javaparser.ast.comments.CommentsCollection
+import com.github.javaparser.ast.comments.JavadocComment
+import com.github.javaparser.javadoc.Javadoc
+import com.github.javaparser.javadoc.description.JavadocInlineTag
+import com.github.javaparser.javadoc.description.JavadocSnippet
+import edu.stanford.nlp.simple.Document
 import me.tongfei.progressbar.ProgressBar
 import org.jsoup.Jsoup
-import org.jsoup.nodes.Element
-import org.jsoup.nodes.TextNode
 import java.io.File
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.regex.Pattern
-import edu.stanford.nlp.simple.Document
-import edu.stanford.nlp.simple.Sentence
+import java.io.PrintWriter
 import java.nio.file.Files
 import java.nio.file.Paths
-import org.apache.commons.csv.CSVFormat
-import org.apache.commons.csv.CSVPrinter
-import java.lang.RuntimeException
+import java.util.*
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 
-fun JavadocDescription.toPlainText(): String = elements.joinToString { element ->
+
+fun Javadoc.toPlainText(): String = description.elements.joinToString("") { element ->
     when (element) {
         is JavadocSnippet -> element.toText()
-        is JavadocInlineTag -> element.content
-        else -> throw RuntimeException("Unknown JavadocDescriptionElement type: ${element::class.java}")
+        is JavadocInlineTag -> {
+            element.content.trim()
+        }
+        else -> error("Unknown JavadocDescriptionElement type: ${element::class.java}")
     }
 }
+
 fun String.removeTags(): String = Jsoup.parse(this)
-    .apply{
+    .apply {
         select("pre").forEach { it.text("code-example") }
     }
     .text()
 
-class `Extractor` : CliktCommand(name = "extract", help="Extract class-level documentation from javadoc"){
+class Extractor : CliktCommand(name = "extract", help = "Extract class-level documentation from javadoc") {
 
-    init{
-        context { helpFormatter = CliktHelpFormatter(showDefaultValues = true, showRequiredTag = true)}
+    init {
+        context { helpFormatter = CliktHelpFormatter(showDefaultValues = true, showRequiredTag = true) }
     }
 
     private val numThreads by option("--num-threads", help = "number of threads")
         .int()
-        .default(Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
-    private val output by option(help = "output file (default: classdoc.csv)")
-        .file(exists = false)
-        .default(File("classdoc.csv"))
+        .default(Runtime.getRuntime().availableProcessors())
+
+    private val output by option(help = "output file (default: output.txt)")
+        .path(mustExist = false)
+        .default(Paths.get("output.txt"))
+
     private val sources by argument(help = "<path> of the input files")
-        .file(exists = true, readable = true)
+        .file(mustExist = true, mustBeReadable = true)
         .multiple()
 
-    private fun extractHtml(file: File) : Sequence<String> = sequence{
-        val document = Jsoup.parse(file, Charsets.UTF_8.name())
-        val description = document.select(".description .block").text()
-        val sentences = Document(description).sentences()
-        for (sen in sentences){
-            val sentence = sen.toString()
-            if (sentence.length > 1) {
-                yield(sentence)
-            }
+
+    private fun gatherFiles(sources: List<File>): List<File> {
+        return sources
+            .flatMap { it.walk() }
+            .filter { it.isFile }
+            .filter { it.extension == "java" }
+    }
+
+
+    private fun extractJavadoc(file: File): Optional<Javadoc> {
+        return JavaParser()
+            .parse(file)
+            .result
+            .flatMap { it.primaryType }
+            .flatMap { it.javadocComment }
+            .map(JavadocComment::parse)
+    }
+
+
+    private fun extractSentences(javadoc: Javadoc): List<String> {
+        return Document(javadoc.toPlainText().removeTags())
+            .sentences()
+            .map { it.text() }
+            .filter { it.isNotBlank() }
+    }
+
+
+    private fun handleFile(file: File): List<String> {
+        return try {
+            extractJavadoc(file)
+                .map(::extractSentences)
+                .orElse(emptyList())
+        } catch (e: Throwable) {
+            System.err.println(file.path)
+            emptyList()
         }
     }
-    private fun extractJava(file: File) : Sequence<String> = sequence{
-        val parser = JavaParser()
-        val comments = parser.parse(file).commentsCollection
-        val sentences : MutableList<Sentence> = mutableListOf()
-        parser.parse(file).commentsCollection.ifPresent { commentsCollection ->
-            for (javadocComment in commentsCollection.javadocComments) {
-                javadocComment.commentedNode.ifPresent { commentedNode ->
-                    if(commentedNode is ClassOrInterfaceDeclaration) {
-                        val description = javadocComment
-                            .parse()
-                            .description
-                            .toPlainText()
-                            .replace("\u003cp\u003e",".")
-                            .removeTags()
-                        sentences.addAll(Document(description).sentences())
 
-
-                    }
-
-                }
-            }
-        }
-        for (sen in sentences) {
-            val sentence = sen.toString()
-            if (sentence.length > 1) {
-                yield(sentence)
-            }
-        }
-
-    }
 
     override fun run() {
-        val writer = Files.newBufferedWriter(Paths.get(output.path))
-        val csvPrinter = CSVPrinter(writer, CSVFormat.DEFAULT.withHeader("Class", "Sentence"))
-        ProgressBar("Extracting", -1).use { pb ->
-            pb.extraMessage = "Gathering sources"
 
-            val javaSources : List<File> = sources
-                .flatMap { it.walk().toList()}
-                .filter { it.isFile}
-                .filter {it.extension == "html" || it.extension == "java"}
+        val executor = Executors.newFixedThreadPool(numThreads)
 
-            val executor = Executors.newFixedThreadPool(numThreads)
+        Files.newBufferedWriter(output).use { out ->
+            val writer = PrintWriter(out)
 
-            pb.extraMessage = "Processing sources"
-            pb.maxHint(javaSources.size.toLong())
+            ProgressBar("Extracting", -1).use { pb ->
+                pb.extraMessage = "Gathering sources"
+                val javaSources = gatherFiles(sources)
+                pb.maxHint(javaSources.size.toLong())
 
-            val latch = CountDownLatch(javaSources.size)
+                pb.extraMessage = "Processing sources"
 
+                val latch = CountDownLatch(javaSources.size)
 
-
-
-            for (source in javaSources) {
-                executor.submit{
-                    if (source.extension == "java") {
-                        extractJava(source)
-                            .forEach {
-                                synchronized(writer) { csvPrinter.printRecord(source.nameWithoutExtension, it) }
-                            }
-                    } else if (source.extension == "html") {
-                        extractHtml(source)
-                            .forEach {
-                                synchronized(writer) { csvPrinter.printRecord(source.nameWithoutExtension, it) }
-                            }
+                for (source in javaSources) {
+                    executor.submit {
+                        val sentences = handleFile(source).joinToString("\n")
+                        if (sentences.isNotBlank()) {
+                            synchronized(writer) { writer.println(sentences) }
+                        }
+                        pb.step()
+                        latch.countDown()
                     }
-
-                    latch.countDown()
-                    pb.step()
                 }
+
+                latch.await()
+
+                pb.extraMessage = "Done"
             }
-            latch.await()
-            pb.extraMessage = "Done"
-            csvPrinter.flush()
-            csvPrinter.close()
-            executor.shutdown()
-            executor.awaitTermination(5, TimeUnit.MINUTES)
+
         }
 
+        executor.shutdown()
     }
 }
