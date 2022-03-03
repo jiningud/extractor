@@ -51,27 +51,29 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
     private val numThreads by option("--num-threads", help = "number of threads")
         .int()
         .default(Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
-    private val output by option(help = "output file (default: classdoc.csv)")
+    private val output by option("--output", help = "output file (default: classdoc.csv)")
         .file(exists = false)
         .default(File("classdoc.csv"))
     private val sources by argument(help = "<path> of the input files")
         .file(exists = true, readable = true)
         .multiple()
 
-    private fun extractHtml(file: File) : Sequence<String> = sequence{
+    private fun extractHtml(file: File) : Sequence<Pair<String,String>> = sequence{
         val document = Jsoup.parse(file, Charsets.UTF_8.name())
         val description = document.select(".description .block").text()
+        val project = file.absolutePath.substring(49).substringBefore("\\")
         val sentences = Document(description).sentences()
         for (sen in sentences){
             val sentence = sen.toString()
             if (sentence.length > 1) {
-                yield(sentence)
+                yield(Pair(project,sentence))
             }
         }
     }
-    private fun extractJava(file: File) : Sequence<String> = sequence{
+    private fun extractJava(file: File) : Sequence<Pair<String,String>> = sequence{
         val parser = JavaParser()
         val comments = parser.parse(file).commentsCollection
+        val project = file.absolutePath.substring(49).substringBefore("\\")
         val sentences : MutableList<Sentence> = mutableListOf()
         parser.parse(file).commentsCollection.ifPresent { commentsCollection ->
             for (javadocComment in commentsCollection.javadocComments) {
@@ -94,7 +96,7 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
         for (sen in sentences) {
             val sentence = sen.toString()
             if (sentence.length > 1) {
-                yield(sentence)
+                yield(Pair(project,sentence))
             }
         }
 
@@ -120,18 +122,27 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
 
 
 
-
+            var names = mutableSetOf<String>()
+            val re = Regex("[^A-Za-z0-9 ]")
             for (source in javaSources) {
                 executor.submit{
                     if (source.extension == "java") {
                         extractJava(source)
                             .forEach {
-                                synchronized(writer) { csvPrinter.printRecord(source.nameWithoutExtension, it) }
+                                synchronized(writer) { csvPrinter.printRecord(source.nameWithoutExtension + "-" + it.first, re.replace(it.second, " ")) }
+                                if (it.second.length > 1){
+                                    names.add(source.nameWithoutExtension)
+
+                                }
                             }
                     } else if (source.extension == "html") {
                         extractHtml(source)
                             .forEach {
-                                synchronized(writer) { csvPrinter.printRecord(source.nameWithoutExtension, it) }
+                                synchronized(writer) { csvPrinter.printRecord(source.nameWithoutExtension + "-" + it.first, re.replace(it.second, " ")) }
+                                if (it.second.length > 1){
+                                    names.add(source.nameWithoutExtension)
+
+                                }
                             }
                     }
 
@@ -141,6 +152,7 @@ class `Extractor` : CliktCommand(name = "extract", help="Extract class-level doc
             }
             latch.await()
             pb.extraMessage = "Done"
+            print(names.size)
             csvPrinter.flush()
             csvPrinter.close()
             executor.shutdown()
