@@ -7,7 +7,6 @@ import com.github.ajalt.clikt.parameters.options.default
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.types.file
 import com.github.ajalt.clikt.parameters.types.int
-import com.github.ajalt.clikt.parameters.types.path
 import com.github.javaparser.JavaParser
 import com.github.javaparser.ast.comments.JavadocComment
 import com.github.javaparser.javadoc.Javadoc
@@ -15,22 +14,15 @@ import com.github.javaparser.javadoc.description.JavadocInlineTag
 import com.github.javaparser.javadoc.description.JavadocSnippet
 import edu.stanford.nlp.simple.Document
 import me.tongfei.progressbar.ProgressBar
+import org.apache.commons.csv.CSVFormat
+import org.apache.commons.csv.CSVPrinter
 import org.jsoup.Jsoup
 import java.io.File
-import java.io.PrintWriter
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
-import org.apache.commons.csv.CSVFormat
-import org.apache.commons.csv.CSVPrinter
-
-import java.util.concurrent.TimeUnit
-
-import edu.stanford.nlp.simple.Sentence
-
-import java.lang.RuntimeException
 
 fun Javadoc.toPlainText(): String = description.elements.joinToString("") { element ->
     when (element) {
@@ -108,38 +100,45 @@ class Extractor : CliktCommand(name = "extract", help = "Extract class-level doc
     override fun run() {
         val writer = Files.newBufferedWriter(Paths.get(output.path))
         val executor = Executors.newFixedThreadPool(numThreads)
-        val csvPrinter = CSVPrinter(writer, CSVFormat.DEFAULT.withHeader("Class","Sentence"))
 
-            ProgressBar("Extracting", -1).use { pb ->
-                pb.extraMessage = "Gathering sources"
-                val javaSources = gatherFiles(sources)
-                pb.maxHint(javaSources.size.toLong())
+        val format = CSVFormat.Builder.create()
+            .setHeader("class", "sentence")
+            .build()
 
-                pb.extraMessage = "Processing sources"
+        val csvPrinter = CSVPrinter(writer, format)
 
-                val latch = CountDownLatch(javaSources.size)
+        ProgressBar("Extracting", -1).use { pb ->
 
-                for (source in javaSources) {
-                    executor.submit {
-                        val sentences = handleFile(source)
-                        if (sentences.isNotEmpty()) {
-                            for (sentence in sentences) {
-                                synchronized(writer) { csvPrinter.printRecord(source.absolutePath, sentence)}
+            pb.extraMessage = "Gathering sources"
+            val javaSources = gatherFiles(sources)
+            pb.maxHint(javaSources.size.toLong())
+
+            pb.extraMessage = "Processing sources"
+
+            val latch = CountDownLatch(javaSources.size)
+
+            for (source in javaSources) {
+                executor.submit {
+                    val sentences = handleFile(source)
+                    if (sentences.isNotEmpty()) {
+                        synchronized(writer) {
+                            sentences.forEach { sentence ->
+                                csvPrinter.printRecord(source.absolutePath, sentence)
                             }
                         }
-                        pb.step()
-                        latch.countDown()
                     }
+                    pb.step()
+                    latch.countDown()
                 }
-
-                latch.await()
-
-                pb.extraMessage = "Done"
-                csvPrinter.flush()
-                csvPrinter.close()
             }
 
+            latch.await()
 
+            pb.extraMessage = "Done"
+        }
+
+        csvPrinter.flush()
+        csvPrinter.close()
 
         executor.shutdown()
     }
