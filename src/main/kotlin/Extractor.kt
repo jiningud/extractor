@@ -23,7 +23,14 @@ import java.nio.file.Paths
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import org.apache.commons.csv.CSVFormat
+import org.apache.commons.csv.CSVPrinter
 
+import java.util.concurrent.TimeUnit
+
+import edu.stanford.nlp.simple.Sentence
+
+import java.lang.RuntimeException
 
 fun Javadoc.toPlainText(): String = description.elements.joinToString("") { element ->
     when (element) {
@@ -52,8 +59,8 @@ class Extractor : CliktCommand(name = "extract", help = "Extract class-level doc
         .default(Runtime.getRuntime().availableProcessors())
 
     private val output by option(help = "output file (default: output.txt)")
-        .path(mustExist = false)
-        .default(Paths.get("output.txt"))
+        .file(mustExist = false)
+        .default(File("classdoc.csv"))
 
     private val sources by argument(help = "<path> of the input files")
         .file(mustExist = true, mustBeReadable = true)
@@ -99,11 +106,9 @@ class Extractor : CliktCommand(name = "extract", help = "Extract class-level doc
 
 
     override fun run() {
-
+        val writer = Files.newBufferedWriter(Paths.get(output.path))
         val executor = Executors.newFixedThreadPool(numThreads)
-
-        Files.newBufferedWriter(output).use { out ->
-            val writer = PrintWriter(out)
+        val csvPrinter = CSVPrinter(writer, CSVFormat.DEFAULT.withHeader("Class","Sentence"))
 
             ProgressBar("Extracting", -1).use { pb ->
                 pb.extraMessage = "Gathering sources"
@@ -116,9 +121,11 @@ class Extractor : CliktCommand(name = "extract", help = "Extract class-level doc
 
                 for (source in javaSources) {
                     executor.submit {
-                        val sentences = handleFile(source).joinToString("\n")
-                        if (sentences.isNotBlank()) {
-                            synchronized(writer) { writer.println(sentences) }
+                        val sentences = handleFile(source)
+                        if (sentences.isNotEmpty()) {
+                            for (sentence in sentences) {
+                                synchronized(writer) { csvPrinter.printRecord(source.absolutePath, sentence)}
+                            }
                         }
                         pb.step()
                         latch.countDown()
@@ -128,9 +135,11 @@ class Extractor : CliktCommand(name = "extract", help = "Extract class-level doc
                 latch.await()
 
                 pb.extraMessage = "Done"
+                csvPrinter.flush()
+                csvPrinter.close()
             }
 
-        }
+
 
         executor.shutdown()
     }

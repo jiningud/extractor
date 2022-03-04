@@ -19,6 +19,21 @@ dependencies {
     implementation 'edu.stanford.nlp:stanford-corenlp:4.3.1'
     implementation 'edu.stanford.nlp:stanford-corenlp:4.3.1:models'
     implementation 'org.jsoup:jsoup:1.14.3'
+    implementation 'com.opencsv:opencsv:4.0'
+
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib-jdk8'
+    implementation 'cc.mallet:mallet:2.0.8'
+    implementation 'com.github.ajalt:clikt:2.1.0'
+    implementation 'com.google.code.gson:gson:2.8.5'
+    implementation 'com.github.javaparser:javaparser-core:3.14.5'
+    implementation 'com.opencsv:opencsv:4.0'
+    implementation 'com.google.guava:guava:23.5-jre'
+    implementation 'org.jsoup:jsoup:1.12.1'
+    implementation 'me.tongfei:progressbar:0.7.4'
+    implementation 'edu.stanford.nlp:stanford-corenlp:3.9.2'
+    implementation 'com.github.javaparser:javaparser-core:3.23.0'
+
+    implementation 'org.apache.commons:commons-csv:1.9.0'
 }
 
 java {
